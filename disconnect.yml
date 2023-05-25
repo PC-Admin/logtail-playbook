@@ -4,8 +4,8 @@
   hosts: [logtail_clients]
   gather_facts: false
 
-  vars:
-    logtail_api_key: "LOGROTATE_API_KEY_HERE" # To get your API key, follow the guide at: https://betterstack.com/docs/logs/api/getting-started/
+  vars_files:
+    - vars/secret.yml
 
   tasks:
     - name: List the current Logtail sources

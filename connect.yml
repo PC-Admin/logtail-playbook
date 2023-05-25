@@ -1,0 +1,153 @@
+---
+
+- name: Connect Ansible hosts to the Logtail/BetterStack platform
+  hosts: [logtail_clients]
+  gather_facts: false
+
+  vars:
+    logtail_api_key: "LOGROTATE_API_KEY_HERE" # To get your API key, follow the guide at: https://betterstack.com/docs/logs/api/getting-started/
+
+  tasks:
+    - name: List the current Logtail sources
+      ansible.builtin.uri:
+        url: https://logs.betterstack.com/api/v1/sources
+        method: GET
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ logtail_api_key }}"
+      run_once: true
+      register: logtail_source_list
+
+    # - name: Print the Logtail source list
+    #   debug:
+    #     var: logtail_source_list
+    #   run_once: true
+
+    - name: Create a dictionary of names and ids from the Logtail source list
+      set_fact:
+        logtail_sources_dict: "{{ dict(logtail_source_list.json.data | map(attribute='attributes.name') | zip(logtail_source_list.json.data | map(attribute='id')) | list) }}"
+
+    # - name: Print the Logtail sources dictionary
+    #   debug:
+    #     var: logtail_sources_dict
+
+    - name: Create Logtail source for {{ inventory_hostname }} if it doesn't already exist
+      ansible.builtin.uri:
+        url: https://logs.betterstack.com/api/v1/sources
+        method: POST
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ logtail_api_key }}"
+        body_format: json
+        body:
+          name: "{{ inventory_hostname.split('.')[0] }}"
+          platform: "ubuntu"
+        status_code: [200, 201]
+      when: not inventory_hostname.split('.')[0] in logtail_sources_dict
+      register: logtail_source_creation_result
+
+    # - name: Print Logtail source creation result
+    #   ansible.builtin.debug:
+    #     var: logtail_source_creation_result
+
+    # - name: Print Logtail source json
+    #   ansible.builtin.debug:
+    #     msg: "Logtail json: {{ logtail_source_creation_result.json }}"
+    #   when: logtail_source_creation_result.json is defined
+
+# Configure the Vector APT repository with
+#curl -1sLf \
+#  'https://repositories.timber.io/public/vector/cfg/setup/bash.deb.sh' \
+#  | sudo -E bash
+
+    - name: Download the bash.deb.sh script
+      ansible.builtin.get_url:
+        url: https://repositories.timber.io/public/vector/cfg/setup/bash.deb.sh
+        dest: /tmp/bash.deb.sh
+        mode: 0755
+        validate_certs: yes
+
+    - name: Run the bash.deb.sh script to configure the Vector repository
+      become: yes
+      ansible.builtin.command: /tmp/bash.deb.sh
+      args:
+        creates: /etc/apt/sources.list.d/timber.list
+
+# Install Vector with
+#echo -e "Package: vector\nPin: version 0.28.0-1\nPin-Priority: 999" \
+#  > /etc/apt/preferences.d/vector && apt-get install vector=0.28.0-1
+
+    - name: Install Vector with specific Pin version and Pin-Priority
+      become: yes
+      ansible.builtin.apt:
+        name: vector
+        state: present
+        update_cache: yes
+
+# Extend your Vector config by running
+#wget -O ->> /etc/vector/vector.toml \
+#    https://logs.betterstack.com/vector-toml/ubuntu/LYXVuXyfbyJgRkJZdfhSCqd5
+
+    - name: Extend your Vector config
+      become: yes
+      ansible.builtin.get_url:
+        url: "https://logs.betterstack.com/vector-toml/ubuntu/{{ logtail_source_creation_result.json.data.attributes.token }}"
+        dest: /etc/vector/vector.toml
+        mode: 0644
+        validate_certs: yes
+
+# Allow Vector to access logs that are protected by default by running 
+#usermod -a -G mysql vector 2> /dev/null || echo "skipping mysql"; \
+#  (usermod -a -G mongodb vector && chmod g+r /var/log/mongodb/mongod.log) 2> /dev/null || echo "skipping mongodb"; \
+#  usermod -a -G docker vector 2> /dev/null || echo "skipping docker"
+
+    - name: Check if the mysql, mongodb and docker groups exist
+      ansible.builtin.command: "getent group {{ item }}"
+      register: check_groups_output
+      loop:
+        - mysql
+        - mongodb
+        - docker
+      ignore_errors: yes
+      changed_when: false
+      check_mode: no
+
+    - name: Set existing_groups variable
+      set_fact:
+        existing_groups: "{{ check_groups_output.results | selectattr('rc', 'equalto', 0) | map(attribute='item') | list }}"
+
+    - name: Add 'vector' user to existing groups
+      ansible.builtin.user:
+        name: vector
+        groups: "{{ item }}"
+        append: yes
+      loop: "{{ existing_groups }}"
+
+#Run 'systemctl restart vector' and verify it's running with 'systemctl status vector'
+
+    - name: Run a Systemd daemon-reload
+      become: yes
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Start/Restart Vector service
+      become: yes
+      ansible.builtin.systemd:
+        name: vector
+        state: restarted
+        enabled: yes
+        masked: no
+
+    - name: Check Vector service status
+      become: yes
+      ansible.builtin.systemd:
+        name: vector
+        state: started
+        enabled: yes
+        masked: no
+      register: vector_service_status
+
+    - name: Print Vector service status
+      ansible.builtin.debug:
+        var: vector_service_status.state
+      when: vector_service_status.state is defined

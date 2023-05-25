@@ -1,0 +1,49 @@
+---
+
+- name: Remove Ansible hosts from the Logtail/BetterStack platform
+  hosts: [logtail_clients]
+  gather_facts: false
+
+  vars:
+    logtail_api_key: "LOGROTATE_API_KEY_HERE" # To get your API key, follow the guide at: https://betterstack.com/docs/logs/api/getting-started/
+
+  tasks:
+    - name: List the current Logtail sources
+      ansible.builtin.uri:
+        url: https://logs.betterstack.com/api/v1/sources
+        method: GET
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ logtail_api_key }}"
+      run_once: true
+      register: logtail_source_list
+
+    # - name: Print the Logtail source list
+    #   debug:
+    #     var: logtail_source_list
+    #   run_once: true
+
+    - name: Create a dictionary of names and ids from the Logtail source list
+      set_fact:
+        logtail_sources_dict: "{{ dict(logtail_source_list.json.data | map(attribute='attributes.name') | zip(logtail_source_list.json.data | map(attribute='id')) | list) }}"
+
+    # - name: Print the Logtail sources dictionary
+    #   debug:
+    #     var: logtail_sources_dict
+
+    - name: Delete Logtail source for {{ inventory_hostname }} if it exists
+      ansible.builtin.uri:
+        url: "https://logs.betterstack.com/api/v1/sources/{{ logtail_sources_dict[item.split('.')[0]] }}"
+        method: DELETE 
+        headers:
+          Content-Type: application/json
+          Authorization: "Bearer {{ logtail_api_key }}"
+        status_code: [204]
+      when: item.split('.')[0] in logtail_sources_dict
+      with_items: "{{ play_hosts }}"
+      run_once: true
+      register: logtail_source_creation_results
+
+    # - name: Print the Logtail source creation result
+    #   debug:
+    #     var: logtail_source_creation_results

@@ -4,10 +4,13 @@
   hosts: [logtail_clients]
   gather_facts: false
 
-  vars_files:
-    - vars/secret.yml
-
   tasks:
+    - name: Include secret variables
+      ansible.builtin.include_vars:
+        file: vars/secret.yml
+      run_once: true
+      ignore_errors: yes
+
     - name: List the current Logtail sources
       ansible.builtin.uri:
         url: https://logs.betterstack.com/api/v1/sources
@@ -31,7 +34,7 @@
     #   debug:
     #     var: logtail_sources_dict
 
-    - name: Create Logtail source for {{ inventory_hostname }} if it doesn't already exist
+    - name: Create Logtail source for inventory_hostname if it doesn't already exist
       ansible.builtin.uri:
         url: https://logs.betterstack.com/api/v1/sources
         method: POST
@@ -95,6 +98,63 @@
         dest: /etc/vector/vector.toml
         mode: 0644
         validate_certs: yes
+      ignore_errors: true
+
+    - name: "Collect the list of directories in /var/log/ which are NOT owned by root:root or 755 permissions"
+      become: yes
+      ansible.builtin.shell: find /var/log/ -mindepth 1 -type d ! \( -user root -a -group root -a ! -perm 755 \)
+      register: readable_directories
+      changed_when: false
+
+    - name: "Filter /var/log/ directories to include only directories with a wildcard for .log files"
+      set_fact:
+        include_directories: "{{ include_directories +
+                                 [item + '/*.log'] }}"
+      loop: "{{ readable_directories.stdout_lines }}"
+      vars:
+        include_directories: []
+
+    - name: 'Add "/var/log/*.log" to end of the {{ include_directories }} array'
+      set_fact:
+        include_directories: "{{ include_directories +
+                                 ['/var/log/*.log'] }}"
+
+    - name: Add a marker comment at the end of the 'ignore_older_secs' line in /etc/vector/vector.toml
+      become: yes
+      lineinfile:
+        path: /etc/vector/vector.toml
+        regexp: '^ignore_older_secs = 600.*$'
+        line: 'ignore_older_secs = 600 #MARKED'
+        backrefs: yes
+        insertafter: "^\\[sources\\.better_stack_other_.*$"
+        state: present
+
+    - name: Remove the insert section underneath the new marked line
+      become: yes
+      ansible.builtin.shell: |
+          awk '/ignore_older_secs = 600 #MARKED/{flag=1;print;next} /exclude = \[/{flag=0} !flag' /etc/vector/vector.toml > /etc/vector/vector.toml.tmp && mv /etc/vector/vector.toml.tmp /etc/vector/vector.toml
+
+    - name: Print include_directories
+      ansible.builtin.debug:
+        var: include_directories
+
+# The list of non-root folders eliminates the 'Failed to glob path. error=Permission denied (os error 13)' error
+# 'fingerprint.strategy' eliminates the 'More than one file has the same fingerprint.' error
+
+    - name: "Add include_directories block under 'ignore_older_secs = 600 #MARKED' in /etc/vector/vector.toml"
+      become: yes
+      ansible.builtin.blockinfile:
+        path: /etc/vector/vector.toml
+        insertafter: 'ignore_older_secs = 600 #MARKED'
+        block: |
+          fingerprint.strategy = "device_and_inode"
+          include = [
+          {% for dir in include_directories %}
+            "{{ dir }}"{% if not loop.last %},{% endif %}{% if loop.index < include_directories|length %}{{ '
+            ' }}{% endif %}
+          {% endfor %}
+          ]
+        state: present
 
 # Allow Vector to access logs that are protected by default by running 
 #usermod -a -G mysql vector 2> /dev/null || echo "skipping mysql"; \
@@ -126,9 +186,9 @@
 #Run 'systemctl restart vector' and verify it's running with 'systemctl status vector'
 
     - name: Run a Systemd daemon-reload
-      become: yes
+      become: true
       ansible.builtin.systemd:
-        daemon_reload: yes
+        daemon_reload: true
 
     - name: Start/Restart Vector service
       become: yes
@@ -138,7 +198,7 @@
         enabled: yes
         masked: no
 
-    - name: Check Vector service status
+    - name: Start and check Vector service status
       become: yes
       ansible.builtin.systemd:
         name: vector

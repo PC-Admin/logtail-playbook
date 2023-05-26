@@ -4,10 +4,13 @@
   hosts: [logtail_clients]
   gather_facts: false
 
-  vars_files:
-    - vars/secret.yml
-
   tasks:
+    - name: Include secret variables
+      ansible.builtin.include_vars:
+        file: vars/secret.yml
+      run_once: true
+      ignore_errors: yes
+
     - name: List the current Logtail sources
       ansible.builtin.uri:
         url: https://logs.betterstack.com/api/v1/sources
@@ -47,3 +50,16 @@
     # - name: Print the Logtail source creation result
     #   debug:
     #     var: logtail_source_creation_results
+
+    - name: Stop and disable the Vector service
+      become: yes
+      ansible.builtin.service:
+        name: vector
+        state: stopped
+        enabled: no
+
+    - name: Remove /etc/vector/vector.toml configuration file
+      become: yes
+      ansible.builtin.file:
+        path: /etc/vector/vector.toml
+        state: absent

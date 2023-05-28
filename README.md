@@ -1,6 +1,6 @@
 # logtail-playbook
 
-A simple playbook to connect clients to logtail/betterstack.
+A simple playbook to connect clients to Better Stack's Logtail.
 
 ## Connecting clients
 

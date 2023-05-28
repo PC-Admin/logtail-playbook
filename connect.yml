@@ -12,6 +12,7 @@
       ignore_errors: yes
 
     - name: List the current Logtail sources
+      delegate_to: localhost
       ansible.builtin.uri:
         url: https://logs.betterstack.com/api/v1/sources
         method: GET
@@ -27,14 +28,17 @@
     #   run_once: true
 
     - name: Create a dictionary of names and ids from the Logtail source list
+      delegate_to: localhost
       set_fact:
         logtail_sources_dict: "{{ dict(logtail_source_list.json.data | map(attribute='attributes.name') | zip(logtail_source_list.json.data | map(attribute='id')) | list) }}"
+      run_once: true
 
     # - name: Print the Logtail sources dictionary
     #   debug:
     #     var: logtail_sources_dict
 
     - name: Create Logtail source for inventory_hostname if it doesn't already exist
+      delegate_to: localhost
       ansible.builtin.uri:
         url: https://logs.betterstack.com/api/v1/sources
         method: POST
